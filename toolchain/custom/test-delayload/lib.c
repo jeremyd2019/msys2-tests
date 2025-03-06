@@ -3,6 +3,13 @@
 #include <windows.h>
 #include <delayimp.h>
 
+extern char __ImageBase;
+static inline void * rva(DWORD rva)
+{
+  return (void *)((char*)&__ImageBase + rva);
+}
+
+
 FARPROC WINAPI dll_failure_hook(unsigned dliNotify, PDelayLoadInfo pdli);
 PfnDliHook __pfnDliFailureHook2 = dll_failure_hook;
 FARPROC WINAPI dll_failure_hook(unsigned dliNotify, PDelayLoadInfo pdli) {
@@ -10,14 +17,24 @@ FARPROC WINAPI dll_failure_hook(unsigned dliNotify, PDelayLoadInfo pdli) {
     printf("FAILURE-HOOK: Loading DLL %s\n", pdli->szDll);
     if (strcmp(pdli->szDll, "does_not_exist.exe") == 0) {
       /* we return main executable */
-      return (FARPROC)GetModuleHandle(NULL);
+      HMODULE hm = GetModuleHandle(NULL);
+#ifdef WRITE_BACK
+      *(HMODULE*)rva(pdli->pidd->rvaHmod) = hm;
+#endif
+      return (FARPROC)hm;
     }
     assert(0);
   } else if (dliNotify == dliFailGetProc && pdli->dwLastError == ERROR_MOD_NOT_FOUND) {
     printf("FAILURE-HOOK: Loading Proc %s from DLL %s\n", pdli->dlp.szProcName, pdli->szDll);
     if (strcmp(pdli->szDll, "does_not_exist.exe") == 0) {
       /* we return proc from main executable */
-      return (FARPROC)GetProcAddress(GetModuleHandle(NULL), pdli->dlp.szProcName);
+      HMODULE hm = GetModuleHandle(NULL);
+      FARPROC pfn = GetProcAddress(hm, pdli->dlp.szProcName);
+#ifdef WRITE_BACK
+      *(HMODULE*)rva(pdli->pidd->rvaHmod) = hm;
+      *pdli->ppfn = pfn;
+#endif
+      return pfn;
     }
     assert(0);
   }
@@ -66,14 +83,23 @@ FARPROC WINAPI dll_notify_hook(unsigned dliNotify, PDelayLoadInfo pdli) {
 // MINGW32 crashes with dllimport
 // https://sourceforge.net/p/mingw-w64/mailman/mingw-w64-public/thread/ea87573f-65ea-44a2-b4bb-ca96c0a136ab@akeo.ie/
 // https://sourceware.org/bugzilla/show_bug.cgi?id=14339
-int main_f(void);
+#define IMPORT
 #else
-__declspec(dllimport) int main_f(void);
+#define IMPORT __declspec(dllimport)
 #endif
+IMPORT int main_f(void);
+IMPORT int main_f2(void);
 
-int lib_f(void) {
+__declspec(dllexport) int lib_f(void) {
   printf("LIB: call main_f\n");
   int ret = main_f();
   printf("LIB: return value f\n");
+  return ret;
+}
+
+__declspec(dllexport) int lib_f2(void) {
+  printf("LIB: call main_f2\n");
+  int ret = main_f2();
+  printf("LIB: return value f2\n");
   return ret;
 }
